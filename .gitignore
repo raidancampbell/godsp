@@ -1,0 +1,9 @@
+# macOS
+.DS_Store
+
+# Go build/test artifacts
+*.test
+*.out
+*.prof
+*.cpu
+*.mem
