@@ -106,3 +106,34 @@ func TestRationalResampler_ZeroInput(t *testing.T) {
 		t.Errorf("expected 0 output for empty input, got %d", len(output))
 	}
 }
+
+func TestResamplerReset(t *testing.T) {
+	r := NewRationalResampler(8, 25)
+	in := make([]float32, 250)
+	for i := range in {
+		in[i] = float32(i%7) - 3
+	}
+	first := append([]float32(nil), r.Process(in)...)
+	r.Reset()
+	second := append([]float32(nil), r.Process(in)...)
+	if len(first) != len(second) {
+		t.Fatalf("len mismatch after reset: %d vs %d", len(first), len(second))
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Fatalf("reset did not restore initial state at %d: %v vs %v", i, first[i], second[i])
+		}
+	}
+}
+
+func TestResamplerNoAllocSteadyState(t *testing.T) {
+	r := NewRationalResampler(8, 25)
+	in := make([]float32, 250)
+	r.Process(in) // warm up the internal buffer
+	allocs := testing.AllocsPerRun(50, func() {
+		r.Process(in)
+	})
+	if allocs > 0 {
+		t.Errorf("Process allocated %.1f times per run, want 0", allocs)
+	}
+}

@@ -9,8 +9,9 @@ type RationalResampler struct {
 	filter     []float32 // prototype low-pass filter
 	filterLen  int
 	history    []float32
-	histPos    int // ring write index into history
-	phase      int // current phase in [0, downFactor)
+	histPos    int       // ring write index into history
+	phase      int       // current phase in [0, downFactor)
+	out        []float32 // reusable output buffer; aliased by Process's return
 }
 
 // NewRationalResampler creates a resampler for the given up/down factors.
@@ -59,8 +60,15 @@ func NewRationalResampler(upFactor, downFactor int) *RationalResampler {
 }
 
 // Process resamples the input and returns the output at the new rate.
+//
+// The returned slice aliases an internal buffer and is only valid until the
+// next call to Process on this resampler. Copy it if you need to retain it.
 func (r *RationalResampler) Process(input []float32) []float32 {
-	out := make([]float32, 0, len(input)*r.upFactor/r.downFactor+1)
+	need := len(input)*r.upFactor/r.downFactor + 1
+	if cap(r.out) < need {
+		r.out = make([]float32, 0, need)
+	}
+	out := r.out[:0]
 
 	histLen := len(r.history)
 	hist := r.history
@@ -97,7 +105,18 @@ func (r *RationalResampler) Process(input []float32) []float32 {
 		r.phase -= up
 	}
 
+	r.out = out
 	return out
+}
+
+// Reset clears the resampler's history and phase so the next Process call
+// behaves as if on a freshly constructed resampler.
+func (r *RationalResampler) Reset() {
+	for i := range r.history {
+		r.history[i] = 0
+	}
+	r.histPos = 0
+	r.phase = 0
 }
 
 func max(a, b int) int {
