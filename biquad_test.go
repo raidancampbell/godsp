@@ -29,6 +29,81 @@ func measureGain(c *BiquadCascade, freqHz, sampleRate float64, n int) float64 {
 	return rms * math.Sqrt2 // RMS → peak for a sinusoid
 }
 
+// TestBiquadProcessBlockBitExact verifies ProcessBlock produces bit-for-bit
+// identical output and identical final state to per-sample Process, across
+// arbitrary block splits (so the state carry between blocks is exercised).
+func TestBiquadProcessBlockBitExact(t *testing.T) {
+	proto := DesignNotch(233.6, 10.0, 25000)
+
+	in := make([]float32, 1000)
+	for i := range in {
+		in[i] = float32(math.Sin(2*math.Pi*233.6*float64(i)/25000) + 0.3*math.Sin(2*math.Pi*1000*float64(i)/25000))
+	}
+
+	// Reference: single-sample Process over the whole stream.
+	ref := *proto
+	want := make([]float32, len(in))
+	for i, x := range in {
+		want[i] = ref.Process(x)
+	}
+
+	// Block path: ProcessBlock over uneven chunks.
+	blk := *proto
+	got := append([]float32(nil), in...)
+	for pos := 0; pos < len(got); {
+		size := []int{1, 7, 64, 3, 128, 33}[pos%6]
+		if size > len(got)-pos {
+			size = len(got) - pos
+		}
+		blk.ProcessBlock(got[pos : pos+size])
+		pos += size
+	}
+
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sample %d: block %v != per-sample %v (must be bit-exact)", i, got[i], want[i])
+		}
+	}
+	if blk.x1 != ref.x1 || blk.x2 != ref.x2 || blk.y1 != ref.y1 || blk.y2 != ref.y2 {
+		t.Fatalf("final state diverged: block {%v %v %v %v} vs per-sample {%v %v %v %v}",
+			blk.x1, blk.x2, blk.y1, blk.y2, ref.x1, ref.x2, ref.y1, ref.y2)
+	}
+}
+
+// TestBiquadCascadeProcessBlockBitExact verifies the cascade's section-outer
+// block path equals the sample-outer per-sample cascade bit-for-bit.
+func TestBiquadCascadeProcessBlockBitExact(t *testing.T) {
+	proto := DesignButterworthHPF(300, 25000, 6)
+
+	in := make([]float32, 777)
+	for i := range in {
+		in[i] = float32((i*13)%97-48) / 31
+	}
+
+	ref := &BiquadCascade{sections: append([]Biquad(nil), proto.sections...)}
+	want := make([]float32, len(in))
+	for i, x := range in {
+		want[i] = ref.Process(x)
+	}
+
+	blk := &BiquadCascade{sections: append([]Biquad(nil), proto.sections...)}
+	got := append([]float32(nil), in...)
+	for pos := 0; pos < len(got); {
+		size := []int{5, 1, 100, 13, 250}[pos%5]
+		if size > len(got)-pos {
+			size = len(got) - pos
+		}
+		blk.ProcessBlock(got[pos : pos+size])
+		pos += size
+	}
+
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sample %d: cascade block %v != per-sample %v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestButterworthHPF_CutoffMinus3dB(t *testing.T) {
 	sr := 25000.0
 	fc := 300.0

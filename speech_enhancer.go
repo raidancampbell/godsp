@@ -76,9 +76,7 @@ func (e *SpeechEnhancer) Process(pcm []float32) {
 
 	// 1. High-pass filter
 	if e.hp != nil {
-		for i, s := range pcm {
-			pcm[i] = e.hp.Process(s)
-		}
+		e.hp.ProcessBlock(pcm)
 	}
 
 	// 2. Pre-emphasis

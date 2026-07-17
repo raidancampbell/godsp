@@ -17,6 +17,26 @@ func (b *Biquad) Process(x float32) float32 {
 	return y
 }
 
+// ProcessBlock filters buf in place. It is bit-for-bit identical to calling
+// Process on each element in turn — same Direct Form I arithmetic, same order —
+// but hoists the five coefficients and four state words into locals so they stay
+// in registers across the whole block instead of being reloaded from the struct
+// per sample.
+func (b *Biquad) ProcessBlock(buf []float32) {
+	b0, b1, b2 := b.b0, b.b1, b.b2
+	a1, a2 := b.a1, b.a2
+	x1, x2 := b.x1, b.x2
+	y1, y2 := b.y1, b.y2
+	for i, x := range buf {
+		y := b0*x + b1*x1 + b2*x2 - a1*y1 - a2*y2
+		x2, x1 = x1, x
+		y2, y1 = y1, y
+		buf[i] = y
+	}
+	b.x1, b.x2 = x1, x2
+	b.y1, b.y2 = y1, y2
+}
+
 func (b *Biquad) Reset() {
 	b.x1, b.x2, b.y1, b.y2 = 0, 0, 0, 0
 }
@@ -32,6 +52,18 @@ func (c *BiquadCascade) Process(x float32) float32 {
 		y = c.sections[i].Process(y)
 	}
 	return y
+}
+
+// ProcessBlock filters buf in place through every section in series. Running
+// each section to completion over the whole block (section-outer) is bit-for-bit
+// identical to the per-sample cascade (sample-outer): a section is linear and
+// time-invariant across the block, so it consumes the previous section's output
+// stream in the same order either way. The gain is that each section keeps its
+// coefficients and state in registers for its whole pass.
+func (c *BiquadCascade) ProcessBlock(buf []float32) {
+	for i := range c.sections {
+		c.sections[i].ProcessBlock(buf)
+	}
 }
 
 func (c *BiquadCascade) Reset() {
