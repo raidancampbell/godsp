@@ -8,3 +8,13 @@ package dsp
 //
 //go:noescape
 func complexFIRDotAVX2(taps []float32, winR []float32, winI []float32, n int, out *[2]float32)
+
+// firDotRealAVX2 accumulates the multiple-of-eight real FIR prefix with AVX2/FMA.
+//
+//go:noescape
+func firDotRealAVX2(taps []float32, win []float32, n int, out *float32)
+
+// complexFIRDot4AVX2 accumulates four shared-tap complex FIR prefixes (multiple of eight) in one tap pass; the Go dispatch handles the per-lane scalar tail.
+//
+//go:noescape
+func complexFIRDot4AVX2(taps []float32, winR []float32, winI []float32, stride int, nv int, out *[8]float32)

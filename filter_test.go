@@ -76,6 +76,168 @@ func TestComplexFIRDotDispatchMatchesScalar(t *testing.T) {
 	}
 }
 
+func TestFIRDotRealDispatchMatchesScalar(t *testing.T) {
+	tapCounts := []int{1, 7, 8, 9, 31, 32, 33, 332, 333, 334}
+	patterns := []struct {
+		name string
+		fill func(taps, win []float32)
+	}{
+		{
+			name: "deterministic",
+			fill: func(taps, win []float32) {
+				for i := range taps {
+					taps[i] = float32((i*17)%29-14) / 31
+					win[i] = float32((i*11)%37-18) / 19
+				}
+			},
+		},
+		{
+			name: "alternating_sign",
+			fill: func(taps, win []float32) {
+				for i := range taps {
+					sign := float32(1)
+					if i&1 != 0 {
+						sign = -1
+					}
+					taps[i] = sign * float32(i+1) / 337
+					win[i] = -sign * float32((i%13)+1) / 7
+				}
+			},
+		},
+		{
+			name: "maximum_finite_normal",
+			fill: func(taps, win []float32) {
+				const scaledTap = float32(0x1p-120)
+				for i := range taps {
+					sign := float32(1)
+					if i&1 != 0 {
+						sign = -1
+					}
+					taps[i] = sign * scaledTap
+					win[i] = math.MaxFloat32
+				}
+			},
+		},
+	}
+
+	for _, pattern := range patterns {
+		for _, n := range tapCounts {
+			t.Run(pattern.name+"/n="+fmt.Sprint(n), func(t *testing.T) {
+				taps := make([]float32, n)
+				win := make([]float32, n)
+				pattern.fill(taps, win)
+				want := firDotRealScalar(taps, win)
+				got := firDotReal(taps, win)
+				scale := abs(want) + 1
+				tol := float32(2e-5) * scale
+				if abs(got-want) > tol {
+					t.Fatalf("got %g, scalar %g, tolerance %g", got, want, tol)
+				}
+			})
+		}
+	}
+}
+
+// TestComplexFIRDot4DispatchMatchesScalar checks that the batched four-output
+// kernel agrees per lane with four independent complexFIRDotScalar calls (its
+// oracle), across the same tap counts and fill patterns as the single-window
+// dispatch test and a couple of representative strides.
+func TestComplexFIRDot4DispatchMatchesScalar(t *testing.T) {
+	tapCounts := []int{1, 7, 8, 9, 31, 32, 33, 332, 333, 334}
+	strides := []int{1, 5, 10}
+	patterns := []struct {
+		name string
+		fill func(taps, winR, winI []float32)
+	}{
+		{
+			name: "deterministic",
+			fill: func(taps, winR, winI []float32) {
+				for i := range taps {
+					taps[i] = float32((i*17)%29-14) / 31
+				}
+				for i := range winR {
+					winR[i] = float32((i*11)%37-18) / 19
+					winI[i] = float32((i*23)%41-20) / 23
+				}
+			},
+		},
+		{
+			name: "alternating_sign",
+			fill: func(taps, winR, winI []float32) {
+				for i := range taps {
+					sign := float32(1)
+					if i&1 != 0 {
+						sign = -1
+					}
+					taps[i] = sign * float32(i+1) / 337
+				}
+				for i := range winR {
+					sign := float32(1)
+					if i&1 != 0 {
+						sign = -1
+					}
+					winR[i] = -sign * float32((i%13)+1) / 7
+					winI[i] = sign * float32((i%17)+1) / 9
+				}
+			},
+		},
+		{
+			name: "maximum_finite_normal",
+			fill: func(taps, winR, winI []float32) {
+				const scaledTap = float32(0x1p-120)
+				for i := range taps {
+					sign := float32(1)
+					if i&1 != 0 {
+						sign = -1
+					}
+					taps[i] = sign * scaledTap
+				}
+				for i := range winR {
+					sign := float32(1)
+					if i&1 != 0 {
+						sign = -1
+					}
+					winR[i] = math.MaxFloat32
+					winI[i] = -sign * math.MaxFloat32
+				}
+			},
+		},
+	}
+
+	for _, pattern := range patterns {
+		for _, n := range tapCounts {
+			for _, stride := range strides {
+				t.Run(fmt.Sprintf("%s/n=%d/stride=%d", pattern.name, n, stride), func(t *testing.T) {
+					// Windows must span lane-3's [3*stride, 3*stride+n) range.
+					winLen := 3*stride + n
+					taps := make([]float32, n)
+					winR := make([]float32, winLen)
+					winI := make([]float32, winLen)
+					pattern.fill(taps, winR, winI)
+
+					var want [8]float32
+					complexFIRDot4Scalar(taps, winR, winI, stride, &want)
+					var got [8]float32
+					complexFIRDot4(taps, winR, winI, stride, &got)
+
+					for l := 0; l < 4; l++ {
+						wantR, wantI := want[2*l], want[2*l+1]
+						gotR, gotI := got[2*l], got[2*l+1]
+						scale := abs(wantR)
+						if abs(wantI) > scale {
+							scale = abs(wantI)
+						}
+						tol := float32(2e-5) * (scale + 1)
+						if abs(gotR-wantR) > tol || abs(gotI-wantI) > tol {
+							t.Fatalf("lane %d: got (%g,%g), scalar (%g,%g), tolerance %g", l, gotR, gotI, wantR, wantI, tol)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func abs(x float32) float32 {
 	if x < 0 {
 		return -x
@@ -163,47 +325,124 @@ func TestDecimatingFilterSplitMatchesSingle(t *testing.T) {
 		)
 	}
 
+	// The tap counts span both SIMD tail cases: 256 is a multiple of both 8
+	// (amd64 nv) and 4 (arm64 nv) so no nv tail runs; 333 leaves a 5-tap amd64
+	// tail and a 1-tap arm64 tail; 130 leaves a 2-tap amd64 tail and no arm64
+	// tail. The decimation factors exercise both large output runs (pure batch
+	// plus batch+remainder) at D=10 and short runs that fall entirely into the
+	// per-output remainder path at D=1000 against this 4097-sample input.
+	cases := []struct {
+		numTaps    int
+		decimation int
+	}{
+		{333, 10}, {333, 3}, {256, 10}, {256, 7}, {130, 10}, {333, 1000},
+	}
+
 	for _, cutoff := range []float64{6250, 12500} {
-		t.Run(fmt.Sprintf("cutoff_%.0f", cutoff), func(t *testing.T) {
-			taps := DesignLPF(cutoff, 250_000, 333)
-			whole := NewDecimatingFilter(taps, 10).Process(input)
-			splitFilter := NewDecimatingFilter(taps, 10)
-			var split []complex64
-			seenPhase := [10]bool{}
-			pos := 0
-			for pos < len(input) {
-				seenPhase[splitFilter.phase] = true
-				size := 1
-				if pos >= 10 {
-					size = []int{7, 13, 29, 64, 3, 101}[pos%6]
+		for _, c := range cases {
+			t.Run(fmt.Sprintf("cutoff_%.0f/taps_%d/decim_%d", cutoff, c.numTaps, c.decimation), func(t *testing.T) {
+				taps := DesignLPF(cutoff, 250_000, c.numTaps)
+				D := c.decimation
+				whole := NewDecimatingFilter(taps, D).Process(input)
+				splitFilter := NewDecimatingFilter(taps, D)
+				var split []complex64
+				seenPhase := make([]bool, D)
+				pos := 0
+				for pos < len(input) {
+					seenPhase[splitFilter.phase] = true
+					size := 1
+					if pos >= 10 {
+						size = []int{7, 13, 29, 64, 3, 101}[pos%6]
+					}
+					if size > len(input)-pos {
+						size = len(input) - pos
+					}
+					split = append(split, splitFilter.Process(input[pos:pos+size])...)
+					pos += size
 				}
-				if size > len(input)-pos {
-					size = len(input) - pos
+				// Only assert full phase coverage where the chunk sizes can plausibly
+				// reach every phase (D small relative to the chunk cadence).
+				if D <= 10 {
+					for phase, seen := range seenPhase {
+						if !seen {
+							t.Fatalf("split stream did not exercise phase %d", phase)
+						}
+					}
 				}
-				split = append(split, splitFilter.Process(input[pos:pos+size])...)
-				pos += size
-			}
-			for phase, seen := range seenPhase {
-				if !seen {
-					t.Fatalf("split stream did not exercise phase %d", phase)
+				if len(split) != len(whole) {
+					t.Fatalf("split output length %d, single-block length %d", len(split), len(whole))
 				}
-			}
-			if len(split) != len(whole) {
-				t.Fatalf("split output length %d, single-block length %d", len(split), len(whole))
-			}
-			for i := range whole {
-				wantR, wantI := real(whole[i]), imag(whole[i])
-				gotR, gotI := real(split[i]), imag(split[i])
-				scale := abs(wantR)
-				if abs(wantI) > scale {
-					scale = abs(wantI)
+				for i := range whole {
+					wantR, wantI := real(whole[i]), imag(whole[i])
+					gotR, gotI := real(split[i]), imag(split[i])
+					scale := abs(wantR)
+					if abs(wantI) > scale {
+						scale = abs(wantI)
+					}
+					tol := float32(2e-5) * (scale + 1)
+					if abs(gotR-wantR) > tol || abs(gotI-wantI) > tol {
+						t.Fatalf("sample %d: split (%g,%g), single (%g,%g), tolerance %g", i, gotR, gotI, wantR, wantI, tol)
+					}
 				}
-				tol := float32(2e-5) * (scale + 1)
-				if abs(gotR-wantR) > tol || abs(gotI-wantI) > tol {
-					t.Fatalf("sample %d: split (%g,%g), single (%g,%g), tolerance %g", i, gotR, gotI, wantR, wantI, tol)
+			})
+		}
+	}
+}
+
+// TestDecimatingFilterBatchMatchesReference feeds a large input in a single
+// block and confirms every decimated output equals a straightforward scalar
+// per-output reference computed the same way the pre-batching path did. This
+// pins the batched inner loop (complexFIRDot4 over four windows sharing taps)
+// against an independent oracle rather than only against the split-stream
+// invariant.
+func TestDecimatingFilterBatchMatchesReference(t *testing.T) {
+	input := make([]complex64, 5000)
+	for i := range input {
+		input[i] = complex(
+			float32((i*29)%251-125)/113,
+			float32((i*37)%241-120)/107,
+		)
+	}
+
+	for _, numTaps := range []int{129, 256, 333} {
+		for _, D := range []int{4, 10} {
+			t.Run(fmt.Sprintf("taps_%d/decim_%d", numTaps, D), func(t *testing.T) {
+				taps := DesignLPF(6250, 250_000, numTaps)
+				got := NewDecimatingFilter(taps, D).Process(input)
+
+				// Reference: overlap-save with an all-zero initial overlap, one
+				// scalar dot per output at stride D starting at index D-1.
+				nTaps := len(taps)
+				overlap := nTaps - 1
+				bufR := make([]float32, overlap+len(input))
+				bufI := make([]float32, overlap+len(input))
+				for i, c := range input {
+					bufR[overlap+i] = real(c)
+					bufI[overlap+i] = imag(c)
 				}
-			}
-		})
+				var want []complex64
+				for i := D - 1; i < len(input); i += D {
+					r, im := complexFIRDotScalar(taps, bufR[i:i+nTaps], bufI[i:i+nTaps])
+					want = append(want, complex(r, im))
+				}
+
+				if len(got) != len(want) {
+					t.Fatalf("output length %d, reference %d", len(got), len(want))
+				}
+				for i := range want {
+					wantR, wantI := real(want[i]), imag(want[i])
+					gotR, gotI := real(got[i]), imag(got[i])
+					scale := abs(wantR)
+					if abs(wantI) > scale {
+						scale = abs(wantI)
+					}
+					tol := float32(2e-5) * (scale + 1)
+					if abs(gotR-wantR) > tol || abs(gotI-wantI) > tol {
+						t.Fatalf("sample %d: got (%g,%g), reference (%g,%g), tolerance %g", i, gotR, gotI, wantR, wantI, tol)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -251,6 +490,22 @@ func BenchmarkDecimatingFilter(b *testing.B) {
 			_ = f.ProcessReuse(input)
 		}
 	})
+
+	// batched_256tap_decim8 sits squarely in the four-output batched path: a long
+	// output run at a modest decimation factor so almost every output is emitted
+	// through complexFIRDot4, with a tap count that is a multiple of both SIMD
+	// widths (no nv tail on either arch).
+	b.Run("batched_256tap_decim8", func(b *testing.B) {
+		input := benchmarkComplexInput(65536)
+		f := NewDecimatingFilter(DesignLPF(6250, 250_000, 256), 8)
+		f.ProcessReuse(input)
+		b.ReportAllocs()
+		b.SetBytes(int64(len(input) * 8))
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = f.ProcessReuse(input)
+		}
+	})
 }
 
 func benchmarkComplexInput(n int) []complex64 {
@@ -273,6 +528,73 @@ func TestDecimatingFilterReal_OutputLength(t *testing.T) {
 
 	if len(output) != 100 {
 		t.Errorf("expected 100 output samples, got %d", len(output))
+	}
+}
+
+// TestDecimatingFilterRealSplitMatchesSingle feeds a real stream through a
+// DecimatingFilterReal in one block and in variable-sized chunks and confirms
+// the decimated outputs match, exercising every starting phase and the
+// firDotReal vector/tail split at 333 taps.
+func TestDecimatingFilterRealSplitMatchesSingle(t *testing.T) {
+	input := make([]float32, 4097)
+	for i := range input {
+		input[i] = float32((i*17)%257-128) / 127
+	}
+
+	for _, cutoff := range []float64{6250, 12500} {
+		t.Run(fmt.Sprintf("cutoff_%.0f", cutoff), func(t *testing.T) {
+			taps := DesignLPF(cutoff, 250_000, 333)
+			whole := NewDecimatingFilterReal(taps, 10).Process(input)
+			splitFilter := NewDecimatingFilterReal(taps, 10)
+			var split []float32
+			seenPhase := [10]bool{}
+			pos := 0
+			for pos < len(input) {
+				seenPhase[splitFilter.phase] = true
+				size := 1
+				if pos >= 10 {
+					size = []int{7, 13, 29, 64, 3, 101}[pos%6]
+				}
+				if size > len(input)-pos {
+					size = len(input) - pos
+				}
+				split = append(split, splitFilter.Process(input[pos:pos+size])...)
+				pos += size
+			}
+			for phase, seen := range seenPhase {
+				if !seen {
+					t.Fatalf("split stream did not exercise phase %d", phase)
+				}
+			}
+			if len(split) != len(whole) {
+				t.Fatalf("split output length %d, single-block length %d", len(split), len(whole))
+			}
+			for i := range whole {
+				scale := abs(whole[i]) + 1
+				tol := float32(2e-5) * scale
+				if abs(split[i]-whole[i]) > tol {
+					t.Fatalf("sample %d: split %g, single %g, tolerance %g", i, split[i], whole[i], tol)
+				}
+			}
+		})
+	}
+}
+
+// TestDecimatingFilterRealProcessReuseZeroAlloc proves the steady-state
+// per-call allocation count of ProcessReuse is zero.
+func TestDecimatingFilterRealProcessReuseZeroAlloc(t *testing.T) {
+	taps := DesignLPF(6250, 250_000, 333)
+	f := NewDecimatingFilterReal(taps, 10)
+	input := make([]float32, 2731)
+	for i := range input {
+		input[i] = float32(i%31) / 31
+	}
+	f.ProcessReuse(input)
+	allocs := testing.AllocsPerRun(100, func() {
+		_ = f.ProcessReuse(input)
+	})
+	if allocs != 0 {
+		t.Fatalf("ProcessReuse allocs/op = %.2f, want 0", allocs)
 	}
 }
 

@@ -21,3 +21,40 @@ func complexFIRDot(taps, winR, winI []float32) (float32, float32) {
 	}
 	return out[0], out[1]
 }
+
+func firDotReal(taps, win []float32) float32 {
+	if len(taps) != len(win) {
+		panic("firDotReal: taps and window must have equal lengths")
+	}
+
+	nv := len(taps) &^ 7
+	if nv == 0 {
+		return firDotRealScalar(taps, win)
+	}
+
+	var out float32
+	firDotRealAVX2(taps, win, nv, &out)
+	for i := nv; i < len(taps); i++ {
+		out += win[i] * taps[i]
+	}
+	return out
+}
+
+func complexFIRDot4(taps, winR, winI []float32, stride int, out *[8]float32) {
+	n := len(taps)
+	nv := n &^ 7
+	if nv == 0 {
+		complexFIRDot4Scalar(taps, winR, winI, stride, out)
+		return
+	}
+
+	complexFIRDot4AVX2(taps, winR, winI, stride, nv, out)
+	for l := 0; l < 4; l++ {
+		base := l * stride
+		for i := nv; i < n; i++ {
+			t := taps[i]
+			out[2*l] += winR[base+i] * t
+			out[2*l+1] += winI[base+i] * t
+		}
+	}
+}

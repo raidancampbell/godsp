@@ -85,3 +85,162 @@ reduce:
 	VMOVSS       X1, 4(SI)
 	VZEROUPPER
 	RET
+
+// func firDotRealAVX2(taps []float32, win []float32, n int, out *float32)
+// Requires: AVX, FMA3
+TEXT ·firDotRealAVX2(SB), NOSPLIT, $0-64
+	MOVQ   taps_base+0(FP), AX
+	MOVQ   win_base+24(FP), CX
+	MOVQ   n+48(FP), DX
+	MOVQ   out+56(FP), BX
+	VXORPS Y0, Y0, Y0
+	VXORPS Y1, Y1, Y1
+	VXORPS Y2, Y2, Y2
+	VXORPS Y3, Y3, Y3
+	XORQ   SI, SI
+	MOVQ   DX, DI
+	SUBQ   $0x20, DI
+
+loop32:
+	CMPQ        SI, DI
+	JG          tail
+	VMOVUPS     (AX)(SI*4), Y4
+	VMOVUPS     (CX)(SI*4), Y5
+	VFMADD231PS Y4, Y5, Y0
+	VMOVUPS     32(AX)(SI*4), Y4
+	VMOVUPS     32(CX)(SI*4), Y5
+	VFMADD231PS Y4, Y5, Y1
+	VMOVUPS     64(AX)(SI*4), Y4
+	VMOVUPS     64(CX)(SI*4), Y5
+	VFMADD231PS Y4, Y5, Y2
+	VMOVUPS     96(AX)(SI*4), Y4
+	VMOVUPS     96(CX)(SI*4), Y5
+	VFMADD231PS Y4, Y5, Y3
+	ADDQ        $0x20, SI
+	JMP         loop32
+
+tail:
+	SUBQ $0x08, DX
+
+loop8:
+	CMPQ        SI, DX
+	JG          reduce
+	VMOVUPS     (AX)(SI*4), Y4
+	VMOVUPS     (CX)(SI*4), Y5
+	VFMADD231PS Y4, Y5, Y0
+	ADDQ        $0x08, SI
+	JMP         loop8
+
+reduce:
+	VADDPS       Y1, Y0, Y0
+	VADDPS       Y3, Y2, Y2
+	VADDPS       Y2, Y0, Y0
+	VEXTRACTF128 $0x00, Y0, X1
+	VEXTRACTF128 $0x01, Y0, X0
+	VADDPS       X0, X1, X0
+	VHADDPS      X0, X0, X0
+	VHADDPS      X0, X0, X0
+	VMOVSS       X0, (BX)
+	VZEROUPPER
+	RET
+
+// func complexFIRDot4AVX2(taps []float32, winR []float32, winI []float32, stride int, nv int, out *[8]float32)
+// Requires: AVX, FMA3
+TEXT ·complexFIRDot4AVX2(SB), NOSPLIT, $0-96
+	MOVQ   taps_base+0(FP), AX
+	MOVQ   winR_base+24(FP), CX
+	MOVQ   winI_base+48(FP), DX
+	MOVQ   stride+72(FP), BX
+	MOVQ   nv+80(FP), SI
+	MOVQ   out+88(FP), DI
+	SHLQ   $0x02, BX
+	LEAQ   (CX)(BX*1), R8
+	LEAQ   (DX)(BX*1), R11
+	LEAQ   (R8)(BX*1), R9
+	LEAQ   (R11)(BX*1), R12
+	LEAQ   (R9)(BX*1), R10
+	LEAQ   (R12)(BX*1), BX
+	VXORPS Y0, Y0, Y0
+	VXORPS Y4, Y4, Y4
+	VXORPS Y1, Y1, Y1
+	VXORPS Y5, Y5, Y5
+	VXORPS Y2, Y2, Y2
+	VXORPS Y6, Y6, Y6
+	VXORPS Y3, Y3, Y3
+	VXORPS Y7, Y7, Y7
+	XORQ   R13, R13
+
+loop8:
+	CMPQ        R13, SI
+	JGE         reduce
+	VMOVUPS     (AX)(R13*4), Y8
+	VMOVUPS     (CX)(R13*4), Y9
+	VMOVUPS     (DX)(R13*4), Y10
+	VFMADD231PS Y8, Y9, Y0
+	VFMADD231PS Y8, Y10, Y4
+	VMOVUPS     (R8)(R13*4), Y9
+	VMOVUPS     (R11)(R13*4), Y10
+	VFMADD231PS Y8, Y9, Y1
+	VFMADD231PS Y8, Y10, Y5
+	VMOVUPS     (R9)(R13*4), Y9
+	VMOVUPS     (R12)(R13*4), Y10
+	VFMADD231PS Y8, Y9, Y2
+	VFMADD231PS Y8, Y10, Y6
+	VMOVUPS     (R10)(R13*4), Y9
+	VMOVUPS     (BX)(R13*4), Y10
+	VFMADD231PS Y8, Y9, Y3
+	VFMADD231PS Y8, Y10, Y7
+	ADDQ        $0x08, R13
+	JMP         loop8
+
+reduce:
+	VEXTRACTF128 $0x00, Y0, X8
+	VEXTRACTF128 $0x01, Y0, X0
+	VADDPS       X0, X8, X0
+	VHADDPS      X0, X0, X0
+	VHADDPS      X0, X0, X0
+	VEXTRACTF128 $0x00, Y4, X8
+	VEXTRACTF128 $0x01, Y4, X4
+	VADDPS       X4, X8, X4
+	VHADDPS      X4, X4, X4
+	VHADDPS      X4, X4, X4
+	VMOVSS       X0, (DI)
+	VMOVSS       X4, 4(DI)
+	VEXTRACTF128 $0x00, Y1, X0
+	VEXTRACTF128 $0x01, Y1, X1
+	VADDPS       X1, X0, X0
+	VHADDPS      X0, X0, X0
+	VHADDPS      X0, X0, X0
+	VEXTRACTF128 $0x00, Y5, X1
+	VEXTRACTF128 $0x01, Y5, X4
+	VADDPS       X4, X1, X1
+	VHADDPS      X1, X1, X1
+	VHADDPS      X1, X1, X1
+	VMOVSS       X0, 8(DI)
+	VMOVSS       X1, 12(DI)
+	VEXTRACTF128 $0x00, Y2, X0
+	VEXTRACTF128 $0x01, Y2, X1
+	VADDPS       X1, X0, X0
+	VHADDPS      X0, X0, X0
+	VHADDPS      X0, X0, X0
+	VEXTRACTF128 $0x00, Y6, X1
+	VEXTRACTF128 $0x01, Y6, X2
+	VADDPS       X2, X1, X1
+	VHADDPS      X1, X1, X1
+	VHADDPS      X1, X1, X1
+	VMOVSS       X0, 16(DI)
+	VMOVSS       X1, 20(DI)
+	VEXTRACTF128 $0x00, Y3, X0
+	VEXTRACTF128 $0x01, Y3, X1
+	VADDPS       X1, X0, X0
+	VHADDPS      X0, X0, X0
+	VHADDPS      X0, X0, X0
+	VEXTRACTF128 $0x00, Y7, X1
+	VEXTRACTF128 $0x01, Y7, X2
+	VADDPS       X2, X1, X1
+	VHADDPS      X1, X1, X1
+	VHADDPS      X1, X1, X1
+	VMOVSS       X0, 24(DI)
+	VMOVSS       X1, 28(DI)
+	VZEROUPPER
+	RET

@@ -138,10 +138,26 @@ func (f *DecimatingFilter) filterStaged(n int, reuseOutput bool) []complex64 {
 
 	taps := f.taps
 	outIdx := 0
+	D := f.decimation
 
 	// Stride the outer loop by the decimation factor — only visit output positions,
-	// skipping the (D-1) non-output samples between them entirely.
-	for i := start; i < n; i += f.decimation {
+	// skipping the (D-1) non-output samples between them entirely. When four output
+	// windows still fit (the 4th's lane-3 window ends within the buffer), batch them
+	// through complexFIRDot4 so the shared taps are loaded once per tap block; fall
+	// back to the single-window kernel for the remainder.
+	i := start
+	for ; i < n; i += D {
+		if outIdx+4 <= maxOut && i+3*D+nTaps <= need {
+			var acc [8]float32
+			complexFIRDot4(taps, bufR[i:], bufI[i:], D, &acc)
+			out[outIdx] = complex(acc[0], acc[1])
+			out[outIdx+1] = complex(acc[2], acc[3])
+			out[outIdx+2] = complex(acc[4], acc[5])
+			out[outIdx+3] = complex(acc[6], acc[7])
+			outIdx += 4
+			i += 3 * D
+			continue
+		}
 		winR := bufR[i : i+nTaps]
 		winI := bufI[i : i+nTaps]
 
@@ -187,6 +203,9 @@ type DecimatingFilterReal struct {
 	phase      int
 	// buf is a reusable scratch buffer, grown as needed.
 	buf []float32
+	// outBuf is a reusable output buffer for ProcessReuse. Its contents are only
+	// valid until the next call to Process or ProcessReuse.
+	outBuf []float32
 }
 
 func NewDecimatingFilterReal(taps []float32, decimation int) *DecimatingFilterReal {
@@ -306,12 +325,7 @@ func (f *FIRFilterReal) processInto(input, out []float32) {
 	copy(buf[overlap:], input)
 
 	for i := range input {
-		window := buf[i : i+nTaps]
-		var acc float32
-		for j, c := range f.taps {
-			acc += window[j] * c
-		}
-		out[i] = acc
+		out[i] = firDotReal(f.taps, buf[i:i+nTaps])
 	}
 
 	copy(f.overlap, buf[len(buf)-overlap:])
@@ -324,7 +338,33 @@ func (f *FIRFilterReal) ResetFIR() {
 	}
 }
 
+// Process applies the decimating FIR filter to the real input samples.
+// Returns a freshly allocated decimated output slice.
 func (f *DecimatingFilterReal) Process(input []float32) []float32 {
+	maxOut := (len(input) + f.decimation - 1) / f.decimation
+	out := make([]float32, maxOut)
+	return f.processInto(input, out)
+}
+
+// ProcessReuse applies the filter and returns a slice backed by an internal
+// buffer that is overwritten on the next call to Process or ProcessReuse on
+// this filter. Use this for intermediate results consumed before the next call
+// to avoid one output allocation per block on hot paths.
+func (f *DecimatingFilterReal) ProcessReuse(input []float32) []float32 {
+	maxOut := (len(input) + f.decimation - 1) / f.decimation
+	if cap(f.outBuf) < maxOut {
+		f.outBuf = make([]float32, maxOut)
+	}
+	out := f.processInto(input, f.outBuf[:maxOut])
+	f.outBuf = out
+	return out
+}
+
+// processInto stages [overlap | input] into the scratch buffer, strides the
+// decimated dot product, and returns the used prefix of out. out must have
+// length >= ceil(len(input)/decimation), the exact upper bound on emitted
+// outputs given any starting phase.
+func (f *DecimatingFilterReal) processInto(input, out []float32) []float32 {
 	nTaps := len(f.taps)
 	overlap := nTaps - 1
 	need := overlap + len(input)
@@ -336,22 +376,16 @@ func (f *DecimatingFilterReal) Process(input []float32) []float32 {
 	copy(buf, f.overlap)
 	copy(buf[overlap:], input)
 
-	maxOut := (len(input) + f.decimation - 1) / f.decimation
-	out := make([]float32, 0, maxOut)
-
+	outIdx := 0
 	for i := 0; i < len(input); i++ {
 		f.phase++
 		if f.phase >= f.decimation {
 			f.phase = 0
-			window := buf[i : i+nTaps]
-			var acc float32
-			for j, c := range f.taps {
-				acc += window[j] * c
-			}
-			out = append(out, acc)
+			out[outIdx] = firDotReal(f.taps, buf[i:i+nTaps])
+			outIdx++
 		}
 	}
 
 	copy(f.overlap, buf[len(buf)-overlap:])
-	return out
+	return out[:outIdx]
 }
