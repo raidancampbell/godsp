@@ -2,6 +2,8 @@
 
 package dsp
 
+import "fmt"
+
 func transformBatch4(f *FFTC, dst, src []complex64, work *fftcBatchWorkspace) {
 	need := fftcBatchWidth * f.n
 	in := work.a[:need]
@@ -19,6 +21,10 @@ func transformBatch4(f *FFTC, dst, src []complex64, work *fftcBatchWorkspace) {
 	// standalone kernels, so the output is bit-identical. In-place (dst==src) is
 	// safe: stage 0 reads all of src into a work buffer before the last stage
 	// writes dst. Other plan shapes fall back to the standalone pack/FFT/unpack.
+	// NOTE: under greedy-radix-8, production sizes (K=288/384/480/800) now open
+	// with radix-8, so they take the standalone path and use the standalone pack
+	// + radix-8 kernel. Forgoing stage-0 fusion for these plans is deliberate (a
+	// fused radix-8 pack kernel is a future optimization).
 	if radices[0] != 4 || radices[last] != 3 {
 		packBatch4AVX2(in, src, f.n)
 		butterflies := 1
@@ -34,6 +40,10 @@ func transformBatch4(f *FFTC, dst, src []complex64, work *fftcBatchWorkspace) {
 				stockhamRadix4AVX2(out, in, tw, butterflies, sections, f.n)
 			case 5:
 				stockhamRadix5AVX2(out, in, tw, butterflies, sections, f.n)
+			case 8:
+				stockhamRadix8AVX2(out, in, tw, butterflies, sections, f.n)
+			default:
+				panic(fmt.Sprintf("stockham batch: unsupported radix %d", radix))
 			}
 			in, out = out, in
 			butterflies *= radix
@@ -63,6 +73,10 @@ func transformBatch4(f *FFTC, dst, src []complex64, work *fftcBatchWorkspace) {
 				stockhamRadix4AVX2(out, in, tw, butterflies, sections, f.n)
 			case 5:
 				stockhamRadix5AVX2(out, in, tw, butterflies, sections, f.n)
+			case 8:
+				stockhamRadix8AVX2(out, in, tw, butterflies, sections, f.n)
+			default:
+				panic(fmt.Sprintf("stockham batch: unsupported radix %d", radix))
 			}
 		}
 		in, out = out, in

@@ -375,3 +375,26 @@ func TestDesignLPF_ValidCutoffNoPanic(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkPackUnpack isolates the arm64 batch transpose at production sizes.
+func BenchmarkPackUnpack(b *testing.B) {
+	for _, n := range []int{288, 512, 800} {
+		src := make([]complex64, fftcBatchWidth*n)
+		dst := make([]complex64, fftcBatchWidth*n)
+		for i := range src {
+			src[i] = complex(float32(i), float32(-i))
+		}
+		b.Run(fmt.Sprintf("pack/n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				packBatch4(dst, src, n)
+			}
+		})
+		b.Run(fmt.Sprintf("unpack/n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				unpackBatch4(dst, src, n)
+			}
+		})
+	}
+}

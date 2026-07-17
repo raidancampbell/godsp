@@ -71,14 +71,16 @@ func buildFFTCLevelTwiddles(n int, radices, subs []int, tw []complex64) [][]comp
 	return levelTw
 }
 
-// fftPlan factors n into the radix sequence (greedy 4s, then at most one 2,
-// then 3s, then 5s) and the sub-length at each level.
+// fftPlan factors n into the radix sequence (greedy 8s, then 4s, then at most one 2, then 3s, then 5s) and the sub-length at each level.
 func fftPlan(n int) (radices, subs []int, ok bool) {
 	rem := n
 	take := func(r int) {
 		rem /= r
 		radices = append(radices, r)
 		subs = append(subs, rem)
+	}
+	for rem%8 == 0 {
+		take(8)
 	}
 	for rem%4 == 0 {
 		take(4)
@@ -129,8 +131,10 @@ func (f *FFTC) work(dst, src []complex64, level, stride int) {
 		f.bfly4(dst, f.levelTw[level], m)
 	case 5:
 		f.bfly5(dst, f.levelTw[level], m)
+	case 8:
+		f.bfly8(dst, f.levelTw[level], m)
 	default:
-		panic(fmt.Sprintf("FFTC: unsupported radix %d (planner emits only 2/3/4/5)", r))
+		panic(fmt.Sprintf("FFTC: unsupported radix %d (planner emits only 2/3/4/5/8)", r))
 	}
 }
 
@@ -148,4 +152,8 @@ func (f *FFTC) bfly3(out []complex64, tw []complex64, m int) {
 
 func (f *FFTC) bfly5(out []complex64, tw []complex64, m int) {
 	bfly5Kernel(out, tw, m)
+}
+
+func (f *FFTC) bfly8(out []complex64, tw []complex64, m int) {
+	bfly8Kernel(out, tw, m)
 }

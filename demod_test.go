@@ -204,3 +204,117 @@ func TestFMDemodulator_ResetAccumulators(t *testing.T) {
 		t.Errorf("FreqOffset should be 0 after reset, got %f", demod.FreqOffset())
 	}
 }
+
+// TestAtan2Approx_Accuracy pins the polynomial approximation to the float32
+// noise floor across all four quadrants and a wide magnitude range. This is
+// the decode-safety proof: the error is orders below C4FM symbol margins.
+func TestAtan2Approx_Accuracy(t *testing.T) {
+	const tol = 3e-7 // radians
+	var maxErr float64
+	for _, r := range []float64{0.001, 0.01, 0.1, 0.5, 1.0, 2.0, 3.0} {
+		for deg := 0; deg < 3600; deg++ {
+			th := float64(deg) * math.Pi / 1800.0
+			x := float32(r * math.Cos(th))
+			y := float32(r * math.Sin(th))
+			got := float64(atan2Approx(y, x))
+			want := math.Atan2(float64(y), float64(x))
+			e := math.Abs(got - want)
+			if e > math.Pi { // wrap ±π seam
+				e = 2*math.Pi - e
+			}
+			if e > maxErr {
+				maxErr = e
+			}
+		}
+	}
+	// x==y==0 must be exactly 0 (matches math.Atan2(0,0)).
+	if v := atan2Approx(0, 0); v != 0 {
+		t.Errorf("atan2Approx(0,0) = %v, want 0", v)
+	}
+	t.Logf("atan2Approx max abs error = %.3e rad", maxErr)
+	if maxErr > tol {
+		t.Errorf("atan2Approx max error %.3e exceeds tol %.3e", maxErr, tol)
+	}
+}
+
+// TestAtan2Block_MatchesScalar gates atan2Block (incl. the arm64 NEON head +
+// n%4 tail in Task 2) against the scalar oracle over misaligned lengths and
+// all sign/magnitude combinations.
+func TestAtan2Block_MatchesScalar(t *testing.T) {
+	for _, n := range []int{0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 33, 64, 100} {
+		y := make([]float32, n)
+		x := make([]float32, n)
+		dst := make([]float32, n)
+		want := make([]float32, n)
+		for i := 0; i < n; i++ {
+			// deterministic, spans all quadrants + magnitudes incl. near-zero.
+			y[i] = float32(math.Sin(float64(i)*0.7)) * float32((i%5)-2)
+			x[i] = float32(math.Cos(float64(i)*0.3)) * float32((i%7)-3)
+		}
+		atan2BlockScalar(want, y, x, 2.5)
+		atan2Block(dst, y, x, 2.5)
+		for i := 0; i < n; i++ {
+			if math.Abs(float64(dst[i]-want[i])) > 1e-6 {
+				t.Fatalf("n=%d i=%d: block=%v scalar=%v (y=%v x=%v)",
+					n, i, dst[i], want[i], y[i], x[i])
+			}
+		}
+	}
+}
+
+// TestAtan2Block_MatchesLibm pins the DISPATCHED block path (the NEON kernel on
+// arm64, the poly elsewhere) directly against math.Atan2 at the hard 3e-7 rad
+// decode-safety budget. TestAtan2Block_MatchesScalar only bounds NEON-vs-scalar
+// at 1e-6, and TestAtan2Approx_Accuracy only pins the scalar oracle — neither
+// catches a NEON edit that drifts 3e-7..1e-6 from the oracle while violating the
+// dual (P25 + audio) constraint. This test closes that gap. n is a multiple of 4
+// so every element goes through the NEON head on arm64.
+func TestAtan2Block_MatchesLibm(t *testing.T) {
+	const tol = 3e-7 // radians — same hard budget as the scalar oracle test
+	const n = 4096   // multiple of 4: full NEON coverage on arm64
+	y := make([]float32, n)
+	x := make([]float32, n)
+	dst := make([]float32, n)
+	idx := 0
+	for _, r := range []float64{0.001, 0.01, 0.1, 0.5, 1.0, 2.0, 3.0} {
+		for deg := 0; deg < 3600 && idx < n; deg++ {
+			th := float64(deg) * math.Pi / 1800.0
+			x[idx] = float32(r * math.Cos(th))
+			y[idx] = float32(r * math.Sin(th))
+			idx++
+		}
+	}
+	atan2Block(dst, y, x, 1.0) // scale 1.0 so dst is the raw angle in radians
+	var maxErr float64
+	for i := 0; i < idx; i++ {
+		want := math.Atan2(float64(y[i]), float64(x[i]))
+		e := math.Abs(float64(dst[i]) - want)
+		if e > math.Pi { // wrap ±π seam
+			e = 2*math.Pi - e
+		}
+		if e > maxErr {
+			maxErr = e
+		}
+	}
+	t.Logf("atan2Block (dispatched path) max abs error = %.3e rad", maxErr)
+	if maxErr > tol {
+		t.Errorf("atan2Block max error %.3e exceeds tol %.3e", maxErr, tol)
+	}
+}
+
+func BenchmarkFMDemodulate(b *testing.B) {
+	sampleRate := 25000.0
+	demod := NewFMDemodulator(sampleRate)
+	const n = 4096
+	samples := make([]complex64, n)
+	var phase float64
+	for i := range samples {
+		phase += 2.0 * math.Pi * 1000.0 / sampleRate
+		samples[i] = complex(float32(math.Cos(phase)), float32(math.Sin(phase)))
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		demod.Demodulate(samples)
+	}
+}

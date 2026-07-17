@@ -54,7 +54,7 @@ func TestFFTCBatch4AVX2MatchesScalar(t *testing.T) {
 		}},
 	}
 
-	for _, n := range []int{120, 192, 240, 288, 384, 400, 480} {
+	for _, n := range []int{120, 192, 240, 288, 384, 400, 480, 512, 600, 800} {
 		f, err := NewFFTC(n)
 		if err != nil {
 			t.Fatal(err)
@@ -98,6 +98,8 @@ func standaloneBatch4(f *FFTC, dst, src []complex64, work *fftcBatchWorkspace) {
 			stockhamRadix4AVX2(out, in, tw, butterflies, sections, f.n)
 		case 5:
 			stockhamRadix5AVX2(out, in, tw, butterflies, sections, f.n)
+		case 8:
+			stockhamRadix8AVX2(out, in, tw, butterflies, sections, f.n)
 		}
 		in, out = out, in
 		butterflies *= radix
@@ -212,4 +214,35 @@ func stockhamStageScalarTest(src, tw []complex64, radix, butterflies, sections, 
 		}
 	}
 	return dst
+}
+
+// TestFFTCBatch4Radix8UsesStandalone proves radix-8-first plans (the production
+// K=288/384/480/800 shapes under greedy-8) transform correctly via the standalone
+// (unfused) dispatch path, since stage-0 fusion requires a radix-4 opener.
+func TestFFTCBatch4Radix8UsesStandalone(t *testing.T) {
+	for _, n := range []int{288, 384, 480, 800} {
+		f, err := NewFFTC(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.radices[0] != 8 {
+			t.Fatalf("n=%d: expected radix-8 opener, got radices=%v", n, f.radices)
+		}
+		work := newFFTCBatchWorkspace(n)
+		src := make([]complex64, 4*n)
+		seed := uint32(0xabcd1234)
+		for i := range src {
+			src[i] = complex(lcg(&seed), lcg(&seed))
+		}
+		got := make([]complex64, 4*n)
+		f.TransformBatch4(got, src, work)
+		// Compare to four independent recursive transforms, one lane at a time,
+		// using the file's existing tolerance helpers.
+		want := make([]complex64, 4*n)
+		for lane := 0; lane < fftcBatchWidth; lane++ {
+			f.Transform(want[lane*n:(lane+1)*n], src[lane*n:(lane+1)*n])
+		}
+		tol := 1e-5 * (maxComplexMagnitude(want) + 1)
+		assertComplex64SlicesClose(t, got, want, tol)
+	}
 }

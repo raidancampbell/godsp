@@ -81,3 +81,61 @@ func bfly5Kernel(out []complex64, tw []complex64, m int) {
 		out[k+3*m] = complex(real(m2)-imag(r2), imag(m2)+real(r2)) // m2 + i·r2
 	}
 }
+
+// bfly8Kernel is the radix-8 DIT butterfly. After the 7 per-leg twiddles it is
+// an 8-point DFT, computed as two radix-4 DFTs (even legs 0,2,4,6 and odd legs
+// 1,3,5,7) recombined with the eighth roots. out holds 8 sub-transforms of
+// length m at offsets k+j*m (j=0..7); tw holds 7 twiddle rows of length m.
+func bfly8Kernel(out []complex64, tw []complex64, m int) {
+	const r = 0.7071067811865476 // √2/2 = |W8 real/imag|
+	for k := 0; k < m; k++ {
+		// Load + per-leg twiddle (leg 0 has no twiddle).
+		x0 := out[k]
+		x1 := out[k+m] * tw[k]
+		x2 := out[k+2*m] * tw[m+k]
+		x3 := out[k+3*m] * tw[2*m+k]
+		x4 := out[k+4*m] * tw[3*m+k]
+		x5 := out[k+5*m] * tw[4*m+k]
+		x6 := out[k+6*m] * tw[5*m+k]
+		x7 := out[k+7*m] * tw[6*m+k]
+
+		// Radix-4 DFT of the even legs (indices 0,2,4,6).
+		e0 := x0 + x4
+		e1 := x0 - x4
+		e2 := x2 + x6
+		e3 := x2 - x6
+		// even outputs E0..E3 (radix-4 combine, forward -j on the odd diff):
+		E0 := e0 + e2
+		E2 := e0 - e2
+		E1 := complex(real(e1)+imag(e3), imag(e1)-real(e3)) // e1 - j*e3
+		E3 := complex(real(e1)-imag(e3), imag(e1)+real(e3)) // e1 + j*e3
+
+		// Radix-4 DFT of the odd legs (indices 1,3,5,7).
+		o0 := x1 + x5
+		o1 := x1 - x5
+		o2 := x3 + x7
+		o3 := x3 - x7
+		O0 := o0 + o2
+		O2 := o0 - o2
+		O1 := complex(real(o1)+imag(o3), imag(o1)-real(o3)) // o1 - j*o3
+		O3 := complex(real(o1)-imag(o3), imag(o1)+real(o3)) // o1 + j*o3
+
+		// Recombine with eighth roots W8^j:
+		//   W8^0 = 1
+		//   W8^1 = r*(1 - i)
+		//   W8^2 = -i
+		//   W8^3 = r*(-1 - i)
+		w1 := complex(r*(real(O1)+imag(O1)), r*(imag(O1)-real(O1)))  // O1 * r(1-i)
+		w2 := complex(imag(O2), -real(O2))                            // O2 * (-i)
+		w3 := complex(r*(imag(O3)-real(O3)), -r*(real(O3)+imag(O3)))  // O3 * r(-1-i)
+
+		out[k] = E0 + O0
+		out[k+m] = E1 + w1
+		out[k+2*m] = E2 + w2
+		out[k+3*m] = E3 + w3
+		out[k+4*m] = E0 - O0
+		out[k+5*m] = E1 - w1
+		out[k+6*m] = E2 - w2
+		out[k+7*m] = E3 - w3
+	}
+}

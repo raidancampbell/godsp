@@ -4,6 +4,8 @@
 package main
 
 import (
+	"math"
+
 	"github.com/mmcloughlin/avo/attr"
 	. "github.com/mmcloughlin/avo/build"
 	. "github.com/mmcloughlin/avo/operand"
@@ -30,6 +32,7 @@ func main() {
 	genRadix3(signMem, r3Half, r3Sin)
 	genRadix4(signMem)
 	genRadix5(signMem)
+	genRadix8(signMem)
 	genRadix4Pack(signMem)
 	genRadix3Unpack(signMem, r3Half, r3Sin)
 	Generate()
@@ -222,10 +225,14 @@ func beginStageMode(name string, radix uint64, mode int) stage {
 			SHLQ(Imm(1), dstSecAdj) // 2 * bBytes32
 		case 4:
 			dstSecAdj = storeLeg3
-		default: // radix 5
+		case 5:
 			dstSecAdj = GP64()
 			MOVQ(bBytes32, dstSecAdj)
 			SHLQ(Imm(2), dstSecAdj) // 4 * bBytes32
+		default: // radix 8 (and any future r>=6): (radix-1)*bBytes32
+			dstSecAdj = GP64()
+			// 7 * bBytes32 = bBytes32 + 2*(3*bBytes32) = bBytes32 + 2*storeLeg3.
+			LEAQ(Mem{Base: bBytes32, Index: storeLeg3, Scale: 2}, dstSecAdj)
 		}
 	}
 
@@ -398,6 +405,46 @@ func (s stage) twMem(q int) Mem {
 		return Mem{Base: s.twPtr, Index: s.twLeg3, Scale: 1}
 	}
 	panic("bad twiddle leg")
+}
+
+// loadLegsWalk loads all `radix` legs for the current butterfly by advancing a
+// single running pointer by inputStepBytes per leg, applying the per-leg twiddle
+// (legs 1..radix-1). Used for radix >= 6 where per-leg SIB stride registers would
+// exceed the 16-GPR budget. Returns the loaded (twiddled) YMM legs in order.
+func (s stage) loadLegsWalk(radix int) []reg.VecVirtual {
+	legs := make([]reg.VecVirtual, radix)
+	p := GP64()
+	MOVQ(s.srcPtr, p)
+	tp := GP64()
+	MOVQ(s.twPtr, tp)
+	for q := 0; q < radix; q++ {
+		v := YMM()
+		VMOVUPS(Mem{Base: p}, v)
+		if q > 0 {
+			w := YMM()
+			VBROADCASTSD(Mem{Base: tp}, w)
+			v = complexMul(v, w)
+			ADDQ(s.bBytes8, tp) // next twiddle row: +butterflies*8 bytes
+		}
+		legs[q] = v
+		if q < radix-1 {
+			ADDQ(s.inputStepBytes, p) // next leg: +inputStep*32 bytes
+		}
+	}
+	return legs
+}
+
+// storeLegsWalk scatters `radix` result legs by advancing a single running
+// pointer by bBytes32 per leg. Mirror of loadLegsWalk for the store side.
+func (s stage) storeLegsWalk(radix int, ys []reg.VecVirtual) {
+	p := GP64()
+	MOVQ(s.dstPtr, p)
+	for q := 0; q < radix; q++ {
+		VMOVUPS(ys[q], Mem{Base: p})
+		if q < radix-1 {
+			ADDQ(s.bBytes32, p)
+		}
+	}
 }
 
 func (s stage) load(q, radix int) reg.VecVirtual {
@@ -637,6 +684,79 @@ func genRadix5(signMem Mem) {
 	s.store(3, 5, y3)
 	s.store(4, 5, y4)
 	s.end(name)
+}
+
+func genRadix8(signMem Mem) {
+	const name = "stockhamRadix8AVX2"
+	s := beginStage(name, 8)
+	sign := YMM()
+	VMOVUPS(signMem, sign)
+	// Eighth-root constants as complex64 broadcast pairs for complexMul.
+	// complexMul(v, w) expects w = VBROADCASTSD of a complex64 {re, im}.
+	w1 := broadcastComplex("fftc_batch_r8_w1", 0.7071067811865476, -0.7071067811865476)  // r(1 - i)
+	w2 := broadcastComplex("fftc_batch_r8_w2", 0.0, -1.0)                                 // -i
+	w3 := broadcastComplex("fftc_batch_r8_w3", -0.7071067811865476, -0.7071067811865476) // r(-1 - i)
+
+	s.start(name)
+	legs := s.loadLegsWalk(8)
+	x0, x1, x2, x3, x4, x5, x6, x7 := legs[0], legs[1], legs[2], legs[3], legs[4], legs[5], legs[6], legs[7]
+
+	// Even radix-4 DFT (legs 0,2,4,6).
+	e0, e1, e2, e3 := YMM(), YMM(), YMM(), YMM()
+	VADDPS(x4, x0, e0)
+	VSUBPS(x4, x0, e1)
+	VADDPS(x6, x2, e2)
+	VSUBPS(x6, x2, e3)
+	E0, E2 := YMM(), YMM()
+	VADDPS(e2, e0, E0)
+	VSUBPS(e2, e0, E2)
+	rotE := jRotNeg(sign, e3) // -j * e3
+	E1, E3 := YMM(), YMM()
+	VADDPS(rotE, e1, E1)
+	VSUBPS(rotE, e1, E3)
+
+	// Odd radix-4 DFT (legs 1,3,5,7).
+	o0, o1, o2, o3 := YMM(), YMM(), YMM(), YMM()
+	VADDPS(x5, x1, o0)
+	VSUBPS(x5, x1, o1)
+	VADDPS(x7, x3, o2)
+	VSUBPS(x7, x3, o3)
+	O0, O2 := YMM(), YMM()
+	VADDPS(o2, o0, O0)
+	VSUBPS(o2, o0, O2)
+	rotO := jRotNeg(sign, o3)
+	O1, O3 := YMM(), YMM()
+	VADDPS(rotO, o1, O1)
+	VSUBPS(rotO, o1, O3)
+
+	// Eighth-root combines.
+	cO1 := complexMul(O1, w1)
+	cO2 := complexMul(O2, w2)
+	cO3 := complexMul(O3, w3)
+
+	y0, y1, y2, y3, y4, y5, y6, y7 := YMM(), YMM(), YMM(), YMM(), YMM(), YMM(), YMM(), YMM()
+	VADDPS(O0, E0, y0)
+	VADDPS(cO1, E1, y1)
+	VADDPS(cO2, E2, y2)
+	VADDPS(cO3, E3, y3)
+	VSUBPS(O0, E0, y4)
+	VSUBPS(cO1, E1, y5)
+	VSUBPS(cO2, E2, y6)
+	VSUBPS(cO3, E3, y7)
+
+	s.storeLegsWalk(8, []reg.VecVirtual{y0, y1, y2, y3, y4, y5, y6, y7})
+	s.end(name)
+}
+
+// broadcastComplex declares a complex64 {re,im} RODATA global and broadcasts it
+// as a 64-bit pair across a YMM (the layout complexMul's `w` argument expects).
+func broadcastComplex(name string, re, im float32) reg.VecVirtual {
+	m := GLOBL(name, attr.RODATA|attr.NOPTR)
+	DATA(0, U32(math.Float32bits(re)))
+	DATA(4, U32(math.Float32bits(im)))
+	v := YMM()
+	VBROADCASTSD(m, v)
+	return v
 }
 
 // declareScalar defines a single-float RODATA global once. Kernels that reuse

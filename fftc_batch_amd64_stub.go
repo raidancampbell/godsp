@@ -16,6 +16,8 @@ func stockhamRadix4AVX2(dst []complex64, src []complex64, tw []complex64, butter
 
 func stockhamRadix5AVX2(dst []complex64, src []complex64, tw []complex64, butterflies int, sections int, n int)
 
+func stockhamRadix8AVX2(dst []complex64, src []complex64, tw []complex64, butterflies int, sections int, n int)
+
 func stockhamRadix4PackAVX2(dst []complex64, src []complex64, tw []complex64, butterflies int, sections int, n int)
 
 func stockhamRadix3UnpackAVX2(dst []complex64, src []complex64, tw []complex64, butterflies int, sections int, n int)

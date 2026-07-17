@@ -428,6 +428,196 @@ GLOBL fftc_batch_radix5_s1<>(SB), RODATA|NOPTR, $4
 DATA fftc_batch_radix5_s2<>+0(SB)/4, $0x3f167918
 GLOBL fftc_batch_radix5_s2<>(SB), RODATA|NOPTR, $4
 
+// func stockhamRadix8AVX2(dst []complex64, src []complex64, tw []complex64, butterflies int, sections int, n int)
+// Requires: AVX, FMA3
+TEXT ·stockhamRadix8AVX2(SB), NOSPLIT, $0-96
+	MOVQ         dst_base+0(FP), CX
+	MOVQ         src_base+24(FP), BX
+	MOVQ         tw_base+48(FP), SI
+	MOVQ         butterflies+72(FP), DI
+	MOVQ         sections+80(FP), R8
+	MOVQ         n+88(FP), AX
+	XORQ         DX, DX
+	MOVQ         $0x0000000000000008, R9
+	DIVQ         R9
+	MOVQ         AX, AX
+	SHLQ         $0x05, AX
+	LEAQ         (AX)(AX*2), DX
+	MOVQ         DI, DX
+	SHLQ         $0x05, DX
+	LEAQ         (DX)(DX*2), R9
+	LEAQ         (DX)(R9*2), R9
+	MOVQ         DI, R10
+	SHLQ         $0x03, R10
+	LEAQ         (R10)(R10*2), R11
+	MOVQ         SI, R11
+	VMOVUPS      fftc_batch_jrot_sign<>+0(SB), Y0
+	VBROADCASTSD fftc_batch_r8_w1<>+0(SB), Y1
+	VBROADCASTSD fftc_batch_r8_w2<>+0(SB), Y2
+	VBROADCASTSD fftc_batch_r8_w3<>+0(SB), Y3
+	XORQ         R12, R12
+
+stockhamRadix8AVX2_section:
+	CMPQ R12, R8
+	JGE  stockhamRadix8AVX2_done
+	XORQ R13, R13
+
+stockhamRadix8AVX2_p:
+	CMPQ           R13, DI
+	JGE            stockhamRadix8AVX2_next_section
+	MOVQ           BX, R14
+	MOVQ           R11, R15
+	VMOVUPS        (R14), Y4
+	ADDQ           AX, R14
+	VMOVUPS        (R14), Y5
+	VBROADCASTSD   (R15), Y6
+	VSHUFPS        $0xa0, Y6, Y6, Y7
+	VSHUFPS        $0xf5, Y6, Y6, Y6
+	VPERMILPS      $0xb1, Y5, Y8
+	VMULPS         Y6, Y8, Y6
+	VFMADDSUB231PS Y5, Y7, Y6
+	ADDQ           R10, R15
+	ADDQ           AX, R14
+	VMOVUPS        (R14), Y5
+	VBROADCASTSD   (R15), Y7
+	VSHUFPS        $0xa0, Y7, Y7, Y8
+	VSHUFPS        $0xf5, Y7, Y7, Y7
+	VPERMILPS      $0xb1, Y5, Y9
+	VMULPS         Y7, Y9, Y7
+	VFMADDSUB231PS Y5, Y8, Y7
+	ADDQ           R10, R15
+	ADDQ           AX, R14
+	VMOVUPS        (R14), Y5
+	VBROADCASTSD   (R15), Y8
+	VSHUFPS        $0xa0, Y8, Y8, Y9
+	VSHUFPS        $0xf5, Y8, Y8, Y8
+	VPERMILPS      $0xb1, Y5, Y10
+	VMULPS         Y8, Y10, Y8
+	VFMADDSUB231PS Y5, Y9, Y8
+	ADDQ           R10, R15
+	ADDQ           AX, R14
+	VMOVUPS        (R14), Y5
+	VBROADCASTSD   (R15), Y9
+	VSHUFPS        $0xa0, Y9, Y9, Y10
+	VSHUFPS        $0xf5, Y9, Y9, Y9
+	VPERMILPS      $0xb1, Y5, Y11
+	VMULPS         Y9, Y11, Y9
+	VFMADDSUB231PS Y5, Y10, Y9
+	ADDQ           R10, R15
+	ADDQ           AX, R14
+	VMOVUPS        (R14), Y5
+	VBROADCASTSD   (R15), Y10
+	VSHUFPS        $0xa0, Y10, Y10, Y11
+	VSHUFPS        $0xf5, Y10, Y10, Y10
+	VPERMILPS      $0xb1, Y5, Y12
+	VMULPS         Y10, Y12, Y10
+	VFMADDSUB231PS Y5, Y11, Y10
+	ADDQ           R10, R15
+	ADDQ           AX, R14
+	VMOVUPS        (R14), Y5
+	VBROADCASTSD   (R15), Y11
+	VSHUFPS        $0xa0, Y11, Y11, Y12
+	VSHUFPS        $0xf5, Y11, Y11, Y11
+	VPERMILPS      $0xb1, Y5, Y13
+	VMULPS         Y11, Y13, Y11
+	VFMADDSUB231PS Y5, Y12, Y11
+	ADDQ           R10, R15
+	ADDQ           AX, R14
+	VMOVUPS        (R14), Y5
+	VBROADCASTSD   (R15), Y12
+	VSHUFPS        $0xa0, Y12, Y12, Y13
+	VSHUFPS        $0xf5, Y12, Y12, Y12
+	VPERMILPS      $0xb1, Y5, Y14
+	VMULPS         Y12, Y14, Y12
+	VFMADDSUB231PS Y5, Y13, Y12
+	ADDQ           R10, R15
+	VADDPS         Y9, Y4, Y5
+	VSUBPS         Y9, Y4, Y4
+	VADDPS         Y11, Y7, Y9
+	VSUBPS         Y11, Y7, Y7
+	VADDPS         Y9, Y5, Y11
+	VSUBPS         Y9, Y5, Y5
+	VPERMILPS      $0xb1, Y7, Y7
+	VXORPS         Y0, Y7, Y7
+	VADDPS         Y7, Y4, Y9
+	VSUBPS         Y7, Y4, Y4
+	VADDPS         Y10, Y6, Y7
+	VSUBPS         Y10, Y6, Y6
+	VADDPS         Y12, Y8, Y10
+	VSUBPS         Y12, Y8, Y8
+	VADDPS         Y10, Y7, Y12
+	VSUBPS         Y10, Y7, Y7
+	VPERMILPS      $0xb1, Y8, Y8
+	VXORPS         Y0, Y8, Y8
+	VADDPS         Y8, Y6, Y10
+	VSUBPS         Y8, Y6, Y6
+	VSHUFPS        $0xa0, Y1, Y1, Y8
+	VSHUFPS        $0xf5, Y1, Y1, Y13
+	VPERMILPS      $0xb1, Y10, Y14
+	VMULPS         Y13, Y14, Y13
+	VFMADDSUB231PS Y10, Y8, Y13
+	VSHUFPS        $0xa0, Y2, Y2, Y8
+	VSHUFPS        $0xf5, Y2, Y2, Y10
+	VPERMILPS      $0xb1, Y7, Y14
+	VMULPS         Y10, Y14, Y10
+	VFMADDSUB231PS Y7, Y8, Y10
+	VSHUFPS        $0xa0, Y3, Y3, Y7
+	VSHUFPS        $0xf5, Y3, Y3, Y8
+	VPERMILPS      $0xb1, Y6, Y14
+	VMULPS         Y8, Y14, Y8
+	VFMADDSUB231PS Y6, Y7, Y8
+	VADDPS         Y12, Y11, Y6
+	VADDPS         Y13, Y9, Y7
+	VADDPS         Y10, Y5, Y14
+	VADDPS         Y8, Y4, Y15
+	VSUBPS         Y12, Y11, Y11
+	VSUBPS         Y13, Y9, Y9
+	VSUBPS         Y10, Y5, Y5
+	VSUBPS         Y8, Y4, Y4
+	MOVQ           CX, R14
+	VMOVUPS        Y6, (R14)
+	ADDQ           DX, R14
+	VMOVUPS        Y7, (R14)
+	ADDQ           DX, R14
+	VMOVUPS        Y14, (R14)
+	ADDQ           DX, R14
+	VMOVUPS        Y15, (R14)
+	ADDQ           DX, R14
+	VMOVUPS        Y11, (R14)
+	ADDQ           DX, R14
+	VMOVUPS        Y9, (R14)
+	ADDQ           DX, R14
+	VMOVUPS        Y5, (R14)
+	ADDQ           DX, R14
+	VMOVUPS        Y4, (R14)
+	INCQ           R13
+	ADDQ           $0x20, BX
+	ADDQ           $0x20, CX
+	ADDQ           $0x08, R11
+	JMP            stockhamRadix8AVX2_p
+
+stockhamRadix8AVX2_next_section:
+	ADDQ R9, CX
+	MOVQ SI, R11
+	INCQ R12
+	JMP  stockhamRadix8AVX2_section
+
+stockhamRadix8AVX2_done:
+	VZEROUPPER
+	RET
+
+DATA fftc_batch_r8_w1<>+0(SB)/4, $0x3f3504f3
+DATA fftc_batch_r8_w1<>+4(SB)/4, $0xbf3504f3
+GLOBL fftc_batch_r8_w1<>(SB), RODATA|NOPTR, $8
+
+DATA fftc_batch_r8_w2<>+0(SB)/4, $0x00000000
+DATA fftc_batch_r8_w2<>+4(SB)/4, $0xbf800000
+GLOBL fftc_batch_r8_w2<>(SB), RODATA|NOPTR, $8
+
+DATA fftc_batch_r8_w3<>+0(SB)/4, $0xbf3504f3
+DATA fftc_batch_r8_w3<>+4(SB)/4, $0xbf3504f3
+GLOBL fftc_batch_r8_w3<>(SB), RODATA|NOPTR, $8
+
 // func stockhamRadix4PackAVX2(dst []complex64, src []complex64, tw []complex64, butterflies int, sections int, n int)
 // Requires: AVX, AVX2, FMA3
 TEXT ·stockhamRadix4PackAVX2(SB), NOSPLIT, $0-96

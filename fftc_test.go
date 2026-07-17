@@ -123,6 +123,46 @@ func TestFFTC_MatchesRadix2FFT(t *testing.T) {
 	}
 }
 
+func TestFFTPlan_Radix8(t *testing.T) {
+	cases := []struct {
+		n       int
+		radices []int
+	}{
+		{8, []int{8}},
+		{16, []int{8, 2}},
+		{64, []int{8, 8}},
+		{288, []int{8, 4, 3, 3}},
+		{384, []int{8, 8, 2, 3}},
+		{480, []int{8, 4, 3, 5}},
+		{512, []int{8, 8, 8}},
+		{600, []int{8, 3, 5, 5}},
+		{800, []int{8, 4, 5, 5}},
+		{432, []int{8, 2, 3, 3, 3}}, // 2^4·3^3: one 8 leaves a single 2 (documented wash)
+	}
+	for _, tc := range cases {
+		radices, subs, ok := fftPlan(tc.n)
+		if !ok {
+			t.Fatalf("n=%d: fftPlan not ok", tc.n)
+		}
+		if len(radices) != len(tc.radices) {
+			t.Fatalf("n=%d: radices=%v, want %v", tc.n, radices, tc.radices)
+		}
+		for i := range radices {
+			if radices[i] != tc.radices[i] {
+				t.Fatalf("n=%d: radices=%v, want %v", tc.n, radices, tc.radices)
+			}
+		}
+		// subs[i] must equal n / product(radices[0..i]).
+		prod := 1
+		for i, r := range radices {
+			prod *= r
+			if subs[i] != tc.n/prod {
+				t.Fatalf("n=%d level %d: subs=%d, want %d", tc.n, i, subs[i], tc.n/prod)
+			}
+		}
+	}
+}
+
 func TestFFTC_RejectsBadSizes(t *testing.T) {
 	for _, n := range []int{-4, 0, 1, 7, 14, 142} {
 		if _, err := NewFFTC(n); err == nil {
@@ -231,7 +271,7 @@ func TestFFTCBatch4MatchesTransform(t *testing.T) {
 		}},
 	}
 
-	for _, n := range []int{120, 192, 240, 288, 384, 400, 480} {
+	for _, n := range []int{120, 192, 240, 288, 384, 400, 480, 512, 600, 800} {
 		f, err := NewFFTC(n)
 		if err != nil {
 			t.Fatal(err)
@@ -429,7 +469,7 @@ func BenchmarkFFTC(b *testing.B) {
 }
 
 func BenchmarkFFTCBatch4(b *testing.B) {
-	for _, n := range []int{288, 384} {
+	for _, n := range []int{120, 192, 240, 288, 384, 400, 480, 512, 600, 800} {
 		f, err := NewFFTC(n)
 		if err != nil {
 			b.Fatal(err)
@@ -462,6 +502,25 @@ func BenchmarkFFTCBatch4(b *testing.B) {
 					f.TransformBatch4(dst, src, work)
 				}
 			})
+		})
+	}
+}
+
+func BenchmarkTransformBatch4(b *testing.B) {
+	for _, n := range []int{288, 384, 480, 512, 600, 800} {
+		f, _ := NewFFTC(n)
+		work := newFFTCBatchWorkspace(n)
+		src := make([]complex64, fftcBatchWidth*n)
+		dst := make([]complex64, fftcBatchWidth*n)
+		seed := uint32(0xb0000 + uint32(n))
+		for i := range src {
+			src[i] = complex(lcg(&seed), lcg(&seed))
+		}
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			b.SetBytes(int64(fftcBatchWidth * n * 8))
+			for i := 0; i < b.N; i++ {
+				f.TransformBatch4(dst, src, work)
+			}
 		})
 	}
 }

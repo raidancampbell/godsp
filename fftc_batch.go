@@ -69,7 +69,7 @@ func stockhamBatch4Scalar(dst, src []complex64, f *FFTC, work *fftcBatchWorkspac
 	butterflies := 1
 	for level, r := range f.radices {
 		sections := f.n / (butterflies * r)
-		var inputs, outputs [5][fftcBatchWidth]complex64
+		var inputs, outputs [8][fftcBatchWidth]complex64
 		for s := 0; s < sections; s++ {
 			for p := 0; p < butterflies; p++ {
 				for q := 0; q < r; q++ {

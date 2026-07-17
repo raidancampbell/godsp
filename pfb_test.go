@@ -268,7 +268,7 @@ func TestPFBFold_MatchesReference(t *testing.T) {
 	// the pure AVX2 vector head on amd64. 180 (= 2²·3²·5, not a multiple of 8)
 	// additionally drives the amd64 scalar tail (bins 176–179). The float64 oracle
 	// gates whichever kernel the current arch compiles.
-	for _, k := range []int{120, 180, 192, 240, 288, 384, 480} {
+	for _, k := range []int{90, 120, 180, 192, 240, 288, 384, 480} {
 		t.Run(fmt.Sprintf("K=%d", k), func(t *testing.T) {
 			p, err := NewPFB(pfbTestProto(15_000_000, k), k)
 			if err != nil {
@@ -302,7 +302,7 @@ func TestPFBFold_MatchesReference(t *testing.T) {
 // every lane's accumulation must match its foldHop result bit-for-bit. K values
 // span multiples of 8 (pure vector head) and 180 (drives the k%8 scalar tail).
 func TestPFBFold4_BitIdenticalToFold(t *testing.T) {
-	for _, k := range []int{120, 180, 192, 240, 288, 384, 480} {
+	for _, k := range []int{90, 120, 180, 192, 240, 288, 384, 480} {
 		t.Run(fmt.Sprintf("K=%d", k), func(t *testing.T) {
 			p, err := NewPFB(pfbTestProto(15_000_000, k), k)
 			if err != nil {

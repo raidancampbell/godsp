@@ -45,6 +45,11 @@ type FMDemodulator struct {
 	rawBuf   []float32
 	audioBuf []float32
 
+	// Reusable scratch for the vectorizable discriminator pass: prodRe/prodIm
+	// = re/im of s·conj(prev). Valid only until the next call to Demodulate.
+	prodReBuf []float32
+	prodImBuf []float32
+
 	// Fingerprinting accumulators (raw discriminator, before de-emphasis)
 	freqOffsetSum float64 // running sum for mean
 	sampleCount   int64
@@ -110,25 +115,25 @@ func (d *FMDemodulator) Demodulate(samples []complex64) (raw []float32, audio []
 	if cap(d.rawBuf) < n {
 		d.rawBuf = make([]float32, n)
 		d.audioBuf = make([]float32, n)
+		d.prodReBuf = make([]float32, n)
+		d.prodImBuf = make([]float32, n)
 	}
 	raw = d.rawBuf[:n]
 	audio = d.audioBuf[:n]
 
+	// Vectorizable pass: raw[i] = arg(s·conj(prev)) · freqScale. Per-sample
+	// independent (only prev chains, at the block seam), so the atan2 is
+	// batched and NEON-accelerated on arm64.
+	d.discriminate(samples, raw)
+
+	// Serial pass: fingerprint accumulate + deviation clamp + de-emphasis IIR
+	// + optional PL notch + audio HPF. Loop-carried; unchanged from the
+	// original per-sample logic.
 	devLim := d.devLimit
-	for i, s := range samples {
-		// Phase difference: arg(s * conj(prev))
-		// conj(prev) = (re, -im)
-		prodRe := real(s)*real(d.prev) + imag(s)*imag(d.prev)
-		prodIm := imag(s)*real(d.prev) - real(s)*imag(d.prev)
-		dphi := float32(math.Atan2(float64(prodIm), float64(prodRe)))
+	for i := 0; i < n; i++ {
+		freqHz := raw[i]
 
-		d.prev = s
-
-		// Scale to Hz
-		freqHz := dphi * d.freqScale
-		raw[i] = freqHz
-
-		// Update fingerprinting accumulators
+		// Update fingerprinting accumulators.
 		d.freqOffsetSum += float64(freqHz)
 		d.sampleCount++
 		absHz := math.Abs(float64(freqHz))
@@ -157,11 +162,29 @@ func (d *FMDemodulator) Demodulate(samples []complex64) (raw []float32, audio []
 		if d.plNotch != nil {
 			deemph = d.plNotch.Process(deemph)
 		}
-
 		audio[i] = d.audioHPF.Process(deemph)
 	}
 
 	return raw, audio
+}
+
+// discriminate fills raw[i] = arg(samples[i]·conj(samples[i-1])) · freqScale.
+// It builds prodRe/prodIm (per-sample independent; prev chains only at the
+// seam), then batches the atan2 via atan2Block (NEON on arm64, poly elsewhere).
+func (d *FMDemodulator) discriminate(samples []complex64, raw []float32) {
+	n := len(samples)
+	pr := d.prodReBuf[:n]
+	pi := d.prodImBuf[:n]
+	prev := d.prev
+	for i, s := range samples {
+		// prod = s · conj(prev); conj(prev) = (re, -im)
+		pr[i] = real(s)*real(prev) + imag(s)*imag(prev)
+		pi[i] = imag(s)*real(prev) - real(s)*imag(prev)
+		prev = s
+	}
+	d.prev = prev
+	// raw[i] = atan2(pi[i], pr[i]) · freqScale
+	atan2Block(raw, pi, pr, d.freqScale)
 }
 
 // FreqOffset returns the mean carrier frequency offset in Hz.
